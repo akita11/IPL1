@@ -5,8 +5,8 @@
 
 // Pin Connections
 // IO7: LED
-// IO5: SwitchA
-// IO6: SwitchB
+// IO5: SwitchB
+// IO6: SwitchA
 // IO2: SDA
 // IO3: SCL
 // IO4: ES_LRCK
@@ -24,7 +24,7 @@
 static const int PIN_SDA = 2;
 static const int PIN_SCL = 3;
 static const uint8_t SC7A20_ADDR = 0x18;
-static const uint8_t ES8311_ADDR = 0x30;
+static const uint8_t ES8311_ADDR = 0x30; // in 8bit expression
 
 // ---- SC7A20HTR (accelerometer) registers ----
 static const uint8_t SC7A20_REG_WHO_AM_I = 0x0F;
@@ -38,14 +38,14 @@ static const int NUM_LEDS = 1;
 static CRGB leds[NUM_LEDS];
 
 // ---- Switches ----
-static const int PIN_SWITCH_A = 5;
-static const int PIN_SWITCH_B = 6;
+static const int PIN_SWITCH_A = 6;
+static const int PIN_SWITCH_B = 5;
 
 // ---- Vibration motors (PWM via LEDC) ----
 static const int PIN_VIB1 = 0;
 static const int PIN_VIB2 = 10;
 static const int PIN_VIB3 = 8;
-static const int VIB_PWM_FREQ_HZ = 5000;
+static const int VIB_PWM_FREQ_HZ = 2000;
 static const int VIB_PWM_RESOLUTION_BITS = 8; // duty range 0-255
 static const uint8_t VIB1_LEDC_CHANNEL = 0;
 static const uint8_t VIB2_LEDC_CHANNEL = 1;
@@ -76,24 +76,84 @@ void readSwitches(bool &swA, bool &swB);
 void initVibrationMotors();
 void setVibration(uint8_t vib1, uint8_t vib2, uint8_t vib3);
 
+void i2cScan() {
+  printf("I2C scan start\n");
+  for (uint8_t addr = 0x08; addr < 0x78; addr++) {
+    Wire.beginTransmission(addr);
+    uint8_t err = Wire.endTransmission();
+    if (err == 0) {
+      printf("Found device at 0x%02X\n", addr);
+    }
+  }
+  printf("I2C scan done\n");
+}
+
 void setup() {
   Serial.begin(115200);
   Wire.begin(PIN_SDA, PIN_SCL);
-
-  initAccelerometer();
+  initVibrationMotors();
   initLed();
-  initAudioCodec();
+/*
+  for (int i = 0; i < 5; i++) {
+    printf("%d\n", i);
+    delay(500);
+  }
+//  i2cScan();
+*/
+/*
+  for (int i = 0; i < 5; i++) {
+    bool f = initAccelerometer();
+    if (!f) {
+      printf("ERROR: Accelerometer init failed (WHO_AM_I mismatch or I2C error)\n");
+    }
+    else {
+      printf("Accelerometer init OK\n");
+    }
+    uint8_t id;
+    i2cReadRegs(SC7A20_ADDR, 0x70, &id, 1);
+    printf("id=%02x\n", id);
+    i2cWriteReg8(SC7A20_ADDR, SC7A20_REG_CTRL_REG1, 0x27);
+    i2cReadRegs(SC7A20_ADDR, SC7A20_REG_CTRL_REG1, &id, 1);
+    printf("CTRL_REG1=%02x\n", id);
+    delay(500);
+  }
+*/
+
+  if (!initAccelerometer()) {
+    printf("ERROR: Accelerometer init failed (WHO_AM_I mismatch or I2C error)\n");
+  }
+
+  //  initAudioCodec();
   pinMode(PIN_SWITCH_A, INPUT_PULLUP);
   pinMode(PIN_SWITCH_B, INPUT_PULLUP);
-  initVibrationMotors();
 }
+
+int stVib = 0, stLED = 0;
 
 void loop() {
-  // Each driver function above is intended to be called on demand from
-  // application logic; nothing runs automatically here.
-}
+/*
+  int16_t ax, ay, az;
+  if (readAccelerometer(ax, ay, az)) {
+    printf("Accel: X=%d, Y=%d, Z=%d\n", ax, ay, az);
+  } else {
+    printf("Accel: read failed\n");
+  }
+*/
+  if (digitalRead(PIN_SWITCH_A) == LOW) {
+    stVib = (stVib + 1) % 4;
+    printf("Switch A pressed, stVib=%d\n", stVib);
+    setVibration(stVib == 1 ? 255 : 0, stVib == 2 ? 255 : 0, stVib == 3 ? 255 : 0);
+    while(digitalRead(PIN_SWITCH_A) == LOW) delay(10);
+  }
 
-// put function definitions here:
+  #define LED_MAX 5
+  if (digitalRead(PIN_SWITCH_B) == LOW) {
+    stLED = (stLED + 1) % 4;
+    printf("Switch B pressed, stLED=%d\n", stLED);
+    setLedColor(stLED == 1 ? LED_MAX : 0, stLED == 2 ? LED_MAX : 0, stLED == 3 ? LED_MAX : 0);
+    while(digitalRead(PIN_SWITCH_B) == LOW) delay(10);
+  }
+}
 
 // ---- Shared I2C helpers ----
 static void i2cWriteReg8(uint8_t devAddr, uint8_t reg, uint8_t value) {
@@ -109,6 +169,7 @@ static bool i2cReadRegs(uint8_t devAddr, uint8_t reg, uint8_t *buf, size_t lengt
   if (Wire.endTransmission(false) != 0) {
     return false;
   }
+  // SR (repeated start) is inside Wire.requestFrom()
   size_t received = Wire.requestFrom((int)devAddr, (int)length);
   if (received != length) {
     return false;
@@ -123,6 +184,7 @@ static bool i2cReadRegs(uint8_t devAddr, uint8_t reg, uint8_t *buf, size_t lengt
 bool initAccelerometer() {
   uint8_t whoAmI = 0;
   if (!i2cReadRegs(SC7A20_ADDR, SC7A20_REG_WHO_AM_I, &whoAmI, 1) || whoAmI != SC7A20_WHO_AM_I_VALUE) {
+    printf("%02x\n", whoAmI);
     return false;
   }
   // Normal mode, 10Hz output data rate, X/Y/Z axes enabled.
@@ -145,13 +207,13 @@ bool readAccelerometer(int16_t &x, int16_t &y, int16_t &z) {
 
 // ---- WS2812B RGB LED ----
 void initLed() {
-  FastLED.addLeds<WS2812B, PIN_LED, GRB>(leds, NUM_LEDS);
-  FastLED.clear();
-  FastLED.show();
+  FastLED.addLeds<WS2812B, PIN_LED, RGB>(leds, NUM_LEDS);
+  setLedColor(0, 0, 0);
 }
 
 void setLedColor(uint8_t r, uint8_t g, uint8_t b) {
-  leds[0] = CRGB(r, g, b);
+  // note: WS2811's output is open-drain (ON=0) -> reverse polarity of nMOS's gate 
+  leds[0] = CRGB(255 - r, 255 - g, 255 - b);
   FastLED.show();
 }
 
@@ -251,10 +313,12 @@ void initVibrationMotors() {
   ledcAttachPin(PIN_VIB1, VIB1_LEDC_CHANNEL);
   ledcAttachPin(PIN_VIB2, VIB2_LEDC_CHANNEL);
   ledcAttachPin(PIN_VIB3, VIB3_LEDC_CHANNEL);
+  setVibration(0, 0, 0); // start with motors off
 }
 
 void setVibration(uint8_t vib1, uint8_t vib2, uint8_t vib3) {
-  ledcWrite(VIB1_LEDC_CHANNEL, vib1);
-  ledcWrite(VIB2_LEDC_CHANNEL, vib2);
-  ledcWrite(VIB3_LEDC_CHANNEL, vib3);
+  printf("setVibration: vib1=%d, vib2=%d, vib3=%d\n", vib1, vib2, vib3);
+  ledcWrite(VIB1_LEDC_CHANNEL, 255 - vib1); // RZ7899: A=1(fix), B=0->ON
+  ledcWrite(VIB2_LEDC_CHANNEL, 255 - vib2);
+  ledcWrite(VIB3_LEDC_CHANNEL, 255 - vib3);
 }
